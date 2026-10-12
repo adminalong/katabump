@@ -1,57 +1,3 @@
-name: Auto Renew
-
-on:
-  schedule:
-    # 每天定时运行（可根据你原本的时间保留）
-    - cron: '0 0 * * *'
-  workflow_dispatch: # 支持手动点击运行
-
-jobs:
-  renew:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Dependencies
-        run: |
-          npm install
-          npx playwright install-deps
-          npx playwright install chrome || true
-
-      # --- 1. 下载并后台启动 Xray 客户端 ---
-      - name: Setup & Run Xray Proxy
-        if: env.XRAY_CONFIG != ''
-        env:
-          XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }}
-        run: |
-          echo "正在安装 Xray-core..."
-          curl -L -s -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip -q xray.zip -d xray_bin
-          
-          echo "$XRAY_CONFIG" > xray_bin/config.json
-          
-          nohup ./xray_bin/xray run -c xray_bin/config.json > xray.log 2>&1 &
-          sleep 2
-          
-          echo "测试本地代理出口 IP..."
-          curl -s -x http://127.0.0.1:10808 https://api.ipify.org || echo "警告: 代理测试超时，尝试继续运行"
-
-      # --- 2. 运行续期脚本 ---
-      - name: Run Renew Script
-        env:
-          USERS_JSON: ${{ secrets.USERS_JSON }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          HTTP_PROXY: "http://127.0.0.1:10808"
-        run: |
-          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node action_renew.js
 name: Katabump Auto Renew
 
 on:
@@ -75,16 +21,35 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y xvfb
+        sudo apt-get install -y xvfb curl unzip
         npm install
         npx playwright install-deps chrome
+
+    # --- 启动 Xray 代理 (如果配置了 XRAY_CONFIG Secret) ---
+    - name: Setup & Run Xray Proxy
+      if: env.XRAY_CONFIG != ''
+      env:
+        XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }}
+      run: |
+        echo "正在安装 Xray-core..."
+        curl -L -s -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+        unzip -q xray.zip -d xray_bin
+        
+        echo "$XRAY_CONFIG" > xray_bin/config.json
+        
+        nohup ./xray_bin/xray run -c xray_bin/config.json > xray.log 2>&1 &
+        sleep 2
+        
+        echo "测试本地代理连通性及出口 IP..."
+        curl -s -x http://127.0.0.1:10808 https://api.ipify.org || echo "警告: 代理测试超时，尝试继续运行"
       
     - name: Run Renew Script
       env:
         # 将 USERS_JSON 配置在 GitHub Repository Secrets 中
         # 格式: [{"username": "xxx", "password": "xxx"}, ...]
         USERS_JSON: ${{ secrets.USERS_JSON }}
-        HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+        # 代理指向本地 Xray 监听端口
+        HTTP_PROXY: "http://127.0.0.1:10808"
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       # 使用 xvfb-run 模拟有头环境运行
