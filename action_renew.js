@@ -436,9 +436,19 @@ async function attemptTurnstileCdp(page) {
                 await page.waitForTimeout(1000);
                 await page.getByRole('link', { name: 'See' }).first().click();
             } catch (e) {
-                console.log('未找到 "See" 按钮。');
-                continue;
-            }
+    console.log('未找到 "See" 按钮。');
+    
+    // 生成截图路径，为了避免覆盖登录失败的截图，文件名加上 _see_fail
+    const seeFailShotPath = path.join(photoDir, `${safeUsername}_see_fail.png`);
+    
+    // 尝试截图
+    try { await page.screenshot({ path: seeFailShotPath, fullPage: true }); } catch (err) { }
+    
+    // 调用现成的函数发送给 TG
+    await sendTelegramMessage(`🚨 *任务异常*\n用户: ${user.username}\n原因: 未找到 "See" 按钮，请查看截图排查。`, seeFailShotPath);
+    
+    continue;
+}
 
             // --- Renew 逻辑 ---
             let renewSuccess = false;
