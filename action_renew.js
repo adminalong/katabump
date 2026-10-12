@@ -29,7 +29,6 @@ async function sendTelegramMessage(message, imagePath = null) {
     if (imagePath && fs.existsSync(imagePath)) {
         console.log('[Telegram] Sending photo...');
         // 使用 curl 发送图片，避免引入额外的 multipart 依赖
-        // 注意：Windows 本地测试可能需要环境支持 curl，GitHub Actions (Ubuntu) 默认支持
         const cmd = `curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto" -F chat_id="${TG_CHAT_ID}" -F photo="@${imagePath}"`;
         await new Promise(resolve => {
             exec(cmd, (err) => {
@@ -178,12 +177,11 @@ async function launchChrome() {
         `--remote-debugging-port=${DEBUG_PORT}`,
         '--no-first-run',
         '--no-default-browser-check',
-        // '--headless=new', // (已被注释) 使用 xvfb-run 时不需要 headless 模式，这样可以模拟有头浏览器增加成功率
         '--disable-gpu',
         '--window-size=1280,720',
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--user-data-dir=/tmp/chrome_user_data' // 必须指定用户数据目录，否则远程调试可能失败
+        '--user-data-dir=/tmp/chrome_user_data' 
     ];
 
     if (PROXY_CONFIG) {
@@ -191,8 +189,7 @@ async function launchChrome() {
         args.push('--proxy-bypass-list=<-loopback>');
     }
     // 添加针对 Linux 环境的额外稳定性参数
-    args.push('--disable-dev-shm-usage'); // 避免共享内存不足
-
+    args.push('--disable-dev-shm-usage'); 
 
     const chrome = spawn(CHROME_PATH, args, {
         detached: true,
@@ -213,15 +210,11 @@ async function launchChrome() {
 }
 
 function getUsers() {
-    // 从环境变量读取 JSON 字符串
-    // GitHub Actions Secret: USERS_JSON = [{"username":..., "password":...}]
     try {
         if (process.env.USERS_JSON) {
             const parsed = JSON.parse(process.env.USERS_JSON);
             const users = Array.isArray(parsed) ? parsed : (parsed.users || []);
             
-            // --- GitHub 原生 Secret Masking ---
-            // 通知 GitHub Actions runner 将所有用户名和密码进行掩码，日志中一旦出现均自动替换为 ***
             users.forEach(u => {
                 if (u.username && u.username.length > 2) {
                     console.log(`::add-mask::${u.username}`);
@@ -342,25 +335,21 @@ async function attemptTurnstileCdp(page) {
 
     for (let i = 0; i < users.length; i++) {
         const user = users[i];
-        console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`); // 隐去具体邮箱 logging
+        console.log(`\n=== 正在处理用户 ${i + 1}/${users.length} ===`); 
 
         try {
             if (page.isClosed()) {
                 page = await context.newPage();
-                // Context credentials apply
                 await page.addInitScript(INJECTED_SCRIPT);
             }
 
-            // --- 登录逻辑 (简略版，逻辑一致) ---
             if (page.url().includes('dashboard')) {
                 await page.goto('https://dashboard.katabump.com/auth/logout');
                 await page.waitForTimeout(2000);
             }
-            // 总是先去登录页
             await page.goto('https://dashboard.katabump.com/auth/login');
             await page.waitForTimeout(2000);
             if (page.url().includes('dashboard')) {
-                // 如果登出没成功，再次登出
                 await page.goto('https://dashboard.katabump.com/auth/logout');
                 await page.waitForTimeout(2000);
                 await page.goto('https://dashboard.katabump.com/auth/login');
@@ -375,7 +364,6 @@ async function attemptTurnstileCdp(page) {
                 await pwdInput.fill(user.password);
                 await page.waitForTimeout(500);
 
-                // --- Cloudflare Turnstile Bypass for Login ---
                 console.log('   >> 正在登录前检查 Turnstile (使用 CDP 绕过)...');
                 let cdpClickResult = false;
                 for (let findAttempt = 0; findAttempt < 15; findAttempt++) {
@@ -408,7 +396,6 @@ async function attemptTurnstileCdp(page) {
                 } else {
                     console.log('   >> 登录前未检测到或未点击 Turnstile，继续操作...');
                 }
-                // --------------------------------------------
 
                 await page.getByRole('button', { name: 'Login', exact: true }).click();
 
@@ -417,10 +404,20 @@ async function attemptTurnstileCdp(page) {
                     const errorMsg = page.getByText('Incorrect password or no account');
                     if (await errorMsg.isVisible({ timeout: 3000 })) {
                         console.error(`   >> ❌ 登录失败: 用户 ${user.username} 账号或密码错误`);
-                        const failShotPath = path.join(photoDir, `${safeUsername}.png`);
-                        try { await page.screenshot({ path: failShotPath, fullPage: true }); } catch (e) { }
-
-                        await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n原因: 账号或密码错误`, failShotPath);
+                        
+                        try {
+                            const fileSys = require('fs');
+                            const targetDir = process.cwd() + '/screenshots';
+                            if (!fileSys.existsSync(targetDir)) {
+                                fileSys.mkdirSync(targetDir, { recursive: true });
+                            }
+                            const safeName = user.username ? user.username.replace(/[^a-z0-9]/gi, '_') : 'unknown_user';
+                            const failShotPath = targetDir + '/' + safeName + '_login_fail.png';
+                            await page.screenshot({ path: failShotPath, fullPage: true });
+                            await sendTelegramMessage(`❌ *登录失败*\n用户: ${user.username}\n原因: 账号或密码错误`, failShotPath);
+                        } catch (e) {
+                            console.log('获取登录失败截图或发送 TG 异常:', e.message);
+                        }
 
                         continue;
                     }
@@ -436,33 +433,39 @@ async function attemptTurnstileCdp(page) {
                 await page.waitForTimeout(1000);
                 await page.getByRole('link', { name: 'See' }).first().click();
             } catch (e) {
-    console.log('未找到 "See" 按钮。');
-    
-    // 生成截图路径，为了避免覆盖登录失败的截图，文件名加上 _see_fail
-    const seeFailShotPath = path.join(photoDir, `${safeUsername}_see_fail.png`);
-    
-    // 尝试截图
-    try { await page.screenshot({ path: seeFailShotPath, fullPage: true }); } catch (err) { }
-    
-    // 调用现成的函数发送给 TG
-    await sendTelegramMessage(`🚨 *任务异常*\n用户: ${user.username}\n原因: 未找到 "See" 按钮，请查看截图排查。`, seeFailShotPath);
-    
-    continue;
-}
+                console.log('未找到 "See" 按钮。');
+                
+                // --- 找不到 See 按钮时进行截图和 TG 推送 ---
+                try {
+                    const fileSys = require('fs');
+                    const targetDir = process.cwd() + '/screenshots';
+                    
+                    if (!fileSys.existsSync(targetDir)) {
+                        fileSys.mkdirSync(targetDir, { recursive: true });
+                    }
+                    
+                    const safeName = user.username ? user.username.replace(/[^a-z0-9]/gi, '_') : 'unknown_user';
+                    const seeFailShot = targetDir + '/' + safeName + '_see_fail.png';
+                    
+                    await page.screenshot({ path: seeFailShot, fullPage: true });
+                    await sendTelegramMessage(`🚨 *任务异常*\n用户: ${user.username}\n原因: 未找到 "See" 按钮，请查看截图排查。`, seeFailShot);
+                } catch (err) {
+                    console.log('获取未找到See按钮的失败截图或发送 TG 异常:', err.message);
+                }
+                // -------------------------------------------
+                
+                continue;
+            }
 
             // --- Renew 逻辑 ---
             let renewSuccess = false;
-            // 2. 一个扁平化的主循环：尝试 Renew 整个流程 (最多 20 次)
             for (let attempt = 1; attempt <= 20; attempt++) {
                 let hasCaptchaError = false;
 
-                // 1. 如果是重试 (attempt > 1)，说明之前失败了或者刚刷新完页面
-                // 我们直接开始寻找 Renew 按钮
                 console.log(`\n[尝试 ${attempt}/20] 正在寻找 Renew 按钮...`);
 
                 const renewBtn = page.getByRole('button', { name: 'Renew', exact: true }).first();
                 try {
-                    // 稍微等待一下，防止页面刚刷新还没渲染出来
                     await renewBtn.waitFor({ state: 'visible', timeout: 5000 });
                 } catch (e) { }
 
@@ -476,7 +479,6 @@ async function attemptTurnstileCdp(page) {
                         continue;
                     }
 
-                    // 准备点击模态框中的确认 Renew 按钮
                     const confirmBtn = modal.getByRole('button', { name: 'Renew' });
                     try {
                         await confirmBtn.waitFor({ state: 'visible', timeout: 3000 });
@@ -489,7 +491,6 @@ async function attemptTurnstileCdp(page) {
                         try {
                             const startVerifyTime = Date.now();
                             while (Date.now() - startVerifyTime < 5000) {
-                                // 检查 URL 或页面中的未到期提示 (如: You can't renew your server yet...)
                                 const currentUrl = page.url();
                                 const notTimeLoc = page.getByText("You can't renew your server yet");
                                 const isNotTime = currentUrl.includes('renew-error') || await notTimeLoc.isVisible().catch(() => false);
@@ -497,7 +498,6 @@ async function attemptTurnstileCdp(page) {
                                 if (isNotTime) {
                                     let dateStr = 'Unknown Date';
 
-                                    // 1. 尝试从页面红色警告框获取文本
                                     try {
                                         if (await notTimeLoc.first().isVisible({ timeout: 1000 })) {
                                             const text = await notTimeLoc.first().innerText();
@@ -506,7 +506,6 @@ async function attemptTurnstileCdp(page) {
                                         }
                                     } catch (e) { }
 
-                                    // 2. 如果页面没提取到，从 URL 参数提取 (把 + 转为空格)
                                     if (dateStr === 'Unknown Date' && currentUrl.includes('renew-error')) {
                                         try {
                                             const rawUrlText = currentUrl.replace(/\+/g, ' ');
@@ -518,7 +517,6 @@ async function attemptTurnstileCdp(page) {
 
                                     console.log(`   >> ⏳ 暂无法续期。下次可用时间: ${dateStr}`);
 
-                                    // 截图证明
                                     const fs = require('fs');
                                     const path = require('path');
                                     const photoDir = path.join(process.cwd(), 'screenshots');
@@ -529,7 +527,7 @@ async function attemptTurnstileCdp(page) {
 
                                     await sendTelegramMessage(`⏳ *暂无法续期 (跳过)*\n用户: ${user.username}\n原因: 还没到时间\n下次可用: ${dateStr}`, skipShotPath);
 
-                                    renewSuccess = true; // 标记完成，跳出重试
+                                    renewSuccess = true; 
                                     try {
                                         const closeBtn = modal.getByRole('button', { name: 'Close' });
                                         if (await closeBtn.isVisible()) await closeBtn.click();
@@ -537,7 +535,6 @@ async function attemptTurnstileCdp(page) {
                                     break;
                                 }
 
-                                // 检查是否有验证码错误提示
                                 if (await page.getByText('Please complete the captcha to continue').isVisible().catch(() => false)) {
                                     console.log('   >> ⚠️ 检测到错误: "Please complete the captcha". 需要进行 Turnstile 验证.');
                                     hasCaptchaError = true;
@@ -548,7 +545,7 @@ async function attemptTurnstileCdp(page) {
                             }
                         } catch (e) { }
 
-                        if (renewSuccess) break; // 还没到时间，直接结束当前用户
+                        if (renewSuccess) break; 
 
                         if (hasCaptchaError) {
                             console.log('   >> 尝试通过 Turnstile CDP 绕过验证码...');
@@ -567,12 +564,10 @@ async function attemptTurnstileCdp(page) {
                             continue;
                         }
 
-                        // F. 检查成功 (模态框消失)
                         await page.waitForTimeout(2000);
                         if (!await modal.isVisible()) {
                             console.log('   >> ✅ Modal closed. Renew successful!');
 
-                            // 截图成功状态
                             const fs = require('fs');
                             const path = require('path');
                             const photoDir = path.join(process.cwd(), 'screenshots');
@@ -606,13 +601,11 @@ async function attemptTurnstileCdp(page) {
             console.error(`Error processing user:`, err);
         }
 
-        // Snapshot before handling next user
-        // In GitHub Actions, we save to 'screenshots' dir
         const fs = require('fs');
         const path = require('path');
         const photoDir = path.join(process.cwd(), 'screenshots');
         if (!fs.existsSync(photoDir)) fs.mkdirSync(photoDir, { recursive: true });
-        // 使用不包含账号信息的编号作为文件名 (避免公开 Artifact 暴露真实邮箱)
+        
         const screenshotPath = path.join(photoDir, `user_${i + 1}.png`);
         try {
             await page.screenshot({ path: screenshotPath, fullPage: true });
